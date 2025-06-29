@@ -1,5 +1,0 @@
-@import "tailwindcss";
-
-html, body {
-  @apply bg-transparent text-slate-900;
-}

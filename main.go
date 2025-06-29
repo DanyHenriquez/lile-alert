@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,14 +13,14 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"github.com/andreykaipov/goobs"
+	"github.com/andreykaipov/goobs/api/requests/inputs"
 	catppuccin "github.com/mbaklor/fyne-catppuccin"
-
 	"google.golang.org/api/option"
 	"google.golang.org/api/youtube/v3"
 )
 
-const apiKey = "YOUR_API_KEY"
-
+var inputName = "LikeAlertText"
 var mu sync.Mutex
 var stopPolling = false
 
@@ -46,6 +47,12 @@ func getLikeCount(apiKey, videoID string) (uint64, error) {
 func startPolling(apiKey, videoID string, label *widget.Label) {
 	go func() {
 		var lastCount uint64 = 0
+
+		client, err := goobs.New("localhost:4455", goobs.WithPassword("YOUR_PASSWORD"))
+		if err != nil {
+			log.Fatal(err)
+		}
+
 		for {
 			mu.Lock()
 			if stopPolling {
@@ -64,8 +71,17 @@ func startPolling(apiKey, videoID string, label *widget.Label) {
 			if count != lastCount {
 				label.SetText("Likes: " + strconv.FormatUint(count, 10))
 				lastCount = count
+				_, err = client.Inputs.SetInputSettings(&inputs.SetInputSettingsParams{
+					InputName: &inputName,
+					InputSettings: map[string]interface{}{
+						"text": fmt.Sprintf("👍 Like count: %d", count),
+					},
+				})
+				if err != nil {
+					log.Print(err)
+				}
 			}
-			time.Sleep(30 * time.Second)
+			time.Sleep(15 * time.Second)
 		}
 	}()
 }
@@ -131,7 +147,6 @@ func main() {
 4. Search for "YouTube Data API v3" → Enable it
 5. Go to APIs & Services → Credentials
 6. Create an API Key and copy it
-7. Replace it in the app source code at the top.
 
 ⚠️ Quota Note:
 - YouTube API has daily limits. Don’t poll too frequently.`
