@@ -25,7 +25,6 @@ import (
 )
 
 var (
-	inputName    = "LikeAlertText"
 	pollingMutex sync.Mutex
 	stopPolling  = false
 )
@@ -50,7 +49,7 @@ func getLikeCount(apiKey, videoID string) (uint64, error) {
 	return response.Items[0].Statistics.LikeCount, nil
 }
 
-func startPolling(apiKey, videoID, obsWsURL, obsWsPassword string, label *widget.Label, errorText *canvas.Text, startBtn, stopBtn *widget.Button) {
+func startPolling(apiKey, videoID, obsWsURL, obsWsPassword, obsInputName, textTemplate string, label *widget.Label, errorText *canvas.Text, startBtn, stopBtn *widget.Button) {
 	go func() {
 		var lastCount uint64
 
@@ -83,21 +82,24 @@ func startPolling(apiKey, videoID, obsWsURL, obsWsPassword string, label *widget
 				lastCount = count
 				label.SetText("👍 Likes: " + strconv.FormatUint(count, 10))
 
+				// Format using the template
+				formatted := fmt.Sprintf(textTemplate, count)
+
 				_, err = client.Inputs.SetInputSettings(&inputs.SetInputSettingsParams{
-					InputName: &inputName,
+					InputName: &obsInputName,
 					InputSettings: map[string]interface{}{
-						"likes": fmt.Sprintf("%d", count),
+						"text": formatted,
 					},
 				})
 				if err != nil {
-					errorText.Text = fmt.Sprintf("OBS update error:", err)
+					errorText.Text = fmt.Sprintf("OBS update error: %v", err)
+					log.Println("OBS update error:", err)
 				}
 			}
 
 			time.Sleep(15 * time.Second)
 		}
 
-		// Re-enable UI buttons after stop
 		startBtn.Enable()
 		stopBtn.Disable()
 	}()
@@ -125,6 +127,12 @@ func main() {
 	obsPasswordEntry := widget.NewPasswordEntry()
 	obsPasswordEntry.SetPlaceHolder("optional")
 
+	obsInputNameEntry := widget.NewEntry()
+	obsInputNameEntry.SetPlaceHolder("OBS Text Input Name (e.g. LikeAlertText)")
+
+	templateEntry := widget.NewEntry()
+	templateEntry.SetPlaceHolder("Text template (must include %d), e.g. 👍 Likes: %d")
+
 	likeLabel := widget.NewLabel("Likes: N/A")
 
 	errorText := canvas.NewText("", theme.Color(theme.ColorNameError))
@@ -133,32 +141,35 @@ func main() {
 	startButton := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), nil)
 	stopButton := widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), nil)
 
-	// Initially stop is disabled
 	stopButton.Disable()
 
 	startButton.OnTapped = func() {
 		apiKey := strings.TrimSpace(apiKeyEntry.Text)
 		videoID := strings.TrimSpace(videoIDEntry.Text)
+		obsWsURL := strings.TrimSpace(obsWsEntry.Text)
+		obsPassword := strings.TrimSpace(obsPasswordEntry.Text)
+		obsInputName := strings.TrimSpace(obsInputNameEntry.Text)
+		textTemplate := strings.TrimSpace(templateEntry.Text)
 
-		if apiKey == "" || videoID == "" {
-			errorText.Text = "You must provide both a YouTube API key and Video ID."
+		if apiKey == "" || videoID == "" || obsInputName == "" || textTemplate == "" {
+			errorText.Text = "❌ Fill in all fields including OBS Input Name and template"
 			return
 		}
-
-		obsWsURL := strings.TrimSpace(obsWsEntry.Text)
+		if !strings.Contains(textTemplate, "%d") {
+			errorText.Text = "❌ Template must include %d"
+			return
+		}
 		if obsWsURL == "" {
 			obsWsURL = "localhost:4455"
 		}
-		obsPassword := strings.TrimSpace(obsPasswordEntry.Text)
 
-		// Set flags and button states
 		pollingMutex.Lock()
 		stopPolling = false
 		startButton.Disable()
 		stopButton.Enable()
 		pollingMutex.Unlock()
 
-		startPolling(apiKey, videoID, obsWsURL, obsPassword, likeLabel, errorText, startButton, stopButton)
+		startPolling(apiKey, videoID, obsWsURL, obsPassword, obsInputName, textTemplate, likeLabel, errorText, startButton, stopButton)
 		errorText.Text = ""
 	}
 
@@ -170,7 +181,6 @@ func main() {
 		pollingMutex.Unlock()
 	}
 
-	// Layout
 	form := container.NewVBox(
 		widget.NewLabel("🔑 YouTube API Key"),
 		apiKeyEntry,
@@ -180,13 +190,16 @@ func main() {
 		obsWsEntry,
 		widget.NewLabel("🔐 OBS WebSocket Password"),
 		obsPasswordEntry,
+		widget.NewLabel("🖊 OBS Input Name"),
+		obsInputNameEntry,
+		widget.NewLabel("📄 Text Template (use %d for count)"),
+		templateEntry,
 		startButton,
 		stopButton,
 		layout.NewSpacer(),
 		likeLabel,
 		container.NewPadded(errorText),
 	)
-
 	helpText := `🎥 HOW TO FIND A VIDEO ID:
 - Copy the part after v= in the YouTube URL: https://youtube.com/watch?v=ABC123 → ABC123
 
@@ -197,8 +210,25 @@ func main() {
 4. Search for "YouTube Data API v3" and enable it
 5. Go to Credentials → Create API Key
 
-⚠️ Usage Tip:
-- Don’t poll too often. The API has quota limits.`
+🖥 HOW TO CONFIGURE OBS:
+1. Open OBS
+2. Go to "Tools" → "WebSocket Server Settings"
+3. Enable the server and (optionally) set a password
+4. Default port is 4455 — this goes in the "OBS WebSocket URL" field
+
+🖊 OBS Input Name:
+- In OBS, click the "+" in the Sources panel
+- Choose "Text (GDI+)" or "Text (FreeType2)" (depending on OS)
+- Name it something like "LikeAlertText"
+- Use this same name in the "OBS Input Name" field in the app
+- Position and style the source in your scene
+
+📄 Template Format:
+- This controls how the text looks in OBS
+- Must include %d where the like count should go
+- Example: "👍 Likes: %d"
+- Will be rendered as: "👍 Likes: 1453"
+`
 
 	helpTab := container.NewScroll(widget.NewLabel(helpText))
 
@@ -208,6 +238,6 @@ func main() {
 	)
 
 	w.SetContent(tabs)
-	w.Resize(fyne.NewSize(500, 500))
+	w.Resize(fyne.NewSize(700, 600))
 	w.ShowAndRun()
 }
