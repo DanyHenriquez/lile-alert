@@ -11,8 +11,12 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
 	"github.com/andreykaipov/goobs"
 	"github.com/andreykaipov/goobs/api/requests/inputs"
 	catppuccin "github.com/mbaklor/fyne-catppuccin"
@@ -20,9 +24,11 @@ import (
 	"google.golang.org/api/youtube/v3"
 )
 
-var inputName = "LikeAlertText"
-var mu sync.Mutex
-var stopPolling = false
+var (
+	inputName    = "LikeAlertText"
+	pollingMutex sync.Mutex
+	stopPolling  = false
+)
 
 func getLikeCount(apiKey, videoID string) (uint64, error) {
 	ctx := context.Background()
@@ -37,52 +43,63 @@ func getLikeCount(apiKey, videoID string) (uint64, error) {
 		return 0, err
 	}
 
-	if len(response.Items) > 0 {
-		stats := response.Items[0].Statistics
-		return stats.LikeCount, nil
+	if len(response.Items) == 0 {
+		return 0, fmt.Errorf("no video found")
 	}
-	return 0, fmt.Errorf("no video found")
+
+	return response.Items[0].Statistics.LikeCount, nil
 }
 
-func startPolling(apiKey, videoID string, label *widget.Label) {
+func startPolling(apiKey, videoID, obsWsURL, obsWsPassword string, label *widget.Label, errorText *canvas.Text, startBtn, stopBtn *widget.Button) {
 	go func() {
-		var lastCount uint64 = 0
+		var lastCount uint64
 
-		client, err := goobs.New("localhost:4455", goobs.WithPassword("YOUR_PASSWORD"))
+		client, err := goobs.New(obsWsURL, goobs.WithPassword(obsWsPassword))
 		if err != nil {
-			log.Fatal(err)
+			errorText.Text = "❌ OBS connection failed"
+			log.Println("OBS error:", err)
+
+			startBtn.Enable()
+			stopBtn.Disable()
+			return
 		}
 
 		for {
-			mu.Lock()
+			pollingMutex.Lock()
 			if stopPolling {
-				mu.Unlock()
+				pollingMutex.Unlock()
 				break
 			}
-			mu.Unlock()
+			pollingMutex.Unlock()
 
 			count, err := getLikeCount(apiKey, videoID)
 			if err != nil {
-				label.SetText("Error: " + err.Error())
+				errorText.Text = "❌ YouTube error: " + err.Error()
 				time.Sleep(30 * time.Second)
 				continue
 			}
 
 			if count != lastCount {
-				label.SetText("Likes: " + strconv.FormatUint(count, 10))
 				lastCount = count
+				label.SetText("👍 Likes: " + strconv.FormatUint(count, 10))
+
 				_, err = client.Inputs.SetInputSettings(&inputs.SetInputSettingsParams{
 					InputName: &inputName,
 					InputSettings: map[string]interface{}{
-						"text": fmt.Sprintf("👍 Like count: %d", count),
+						"likes": fmt.Sprintf("%d", count),
 					},
 				})
 				if err != nil {
-					log.Print(err)
+					errorText.Text = fmt.Sprintf("OBS update error:", err)
 				}
 			}
+
 			time.Sleep(15 * time.Second)
 		}
+
+		// Re-enable UI buttons after stop
+		startBtn.Enable()
+		stopBtn.Disable()
 	}()
 }
 
@@ -90,75 +107,107 @@ func main() {
 	a := app.New()
 	w := a.NewWindow("YouTube Like Monitor")
 
+	// Apply Catppuccin theme
 	ctp := catppuccin.New()
-	ctp.SetFlavor(catppuccin.Latte)
+	ctp.SetFlavor(catppuccin.Macchiato)
 	a.Settings().SetTheme(ctp)
 
-	// UI Elements
-	ApiKeyEntry := widget.NewEntry()
-	ApiKeyEntry.SetPlaceHolder("Enter YouTube API key")
+	// UI elements
+	apiKeyEntry := widget.NewEntry()
+	apiKeyEntry.SetPlaceHolder("YouTube API Key")
 
 	videoIDEntry := widget.NewEntry()
-	videoIDEntry.SetPlaceHolder("Enter YouTube Video ID")
+	videoIDEntry.SetPlaceHolder("e.g. dQw4w9WgXcQ")
+
+	obsWsEntry := widget.NewEntry()
+	obsWsEntry.SetPlaceHolder("localhost:4455")
+
+	obsPasswordEntry := widget.NewPasswordEntry()
+	obsPasswordEntry.SetPlaceHolder("optional")
 
 	likeLabel := widget.NewLabel("Likes: N/A")
 
-	startButton := widget.NewButton("Start", func() {
-		apiKey := strings.TrimSpace(ApiKeyEntry.Text)
-		if apiKey == "" {
-			likeLabel.SetText("Please enter a Video ID")
-			return
-		}
+	errorText := canvas.NewText("", theme.Color(theme.ColorNameError))
+	errorText.TextStyle = fyne.TextStyle{Bold: true}
 
+	startButton := widget.NewButtonWithIcon("Start", theme.MediaPlayIcon(), nil)
+	stopButton := widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), nil)
+
+	// Initially stop is disabled
+	stopButton.Disable()
+
+	startButton.OnTapped = func() {
+		apiKey := strings.TrimSpace(apiKeyEntry.Text)
 		videoID := strings.TrimSpace(videoIDEntry.Text)
-		if videoID == "" {
-			likeLabel.SetText("Please enter a Video ID")
+
+		if apiKey == "" || videoID == "" {
+			errorText.Text = "You must provide both a YouTube API key and Video ID."
 			return
 		}
-		mu.Lock()
+
+		obsWsURL := strings.TrimSpace(obsWsEntry.Text)
+		if obsWsURL == "" {
+			obsWsURL = "localhost:4455"
+		}
+		obsPassword := strings.TrimSpace(obsPasswordEntry.Text)
+
+		// Set flags and button states
+		pollingMutex.Lock()
 		stopPolling = false
-		mu.Unlock()
-		go startPolling(apiKey, videoID, likeLabel)
-	})
+		startButton.Disable()
+		stopButton.Enable()
+		pollingMutex.Unlock()
 
-	stopButton := widget.NewButton("Stop", func() {
-		mu.Lock()
+		startPolling(apiKey, videoID, obsWsURL, obsPassword, likeLabel, errorText, startButton, stopButton)
+		errorText.Text = ""
+	}
+
+	stopButton.OnTapped = func() {
+		pollingMutex.Lock()
 		stopPolling = true
-		mu.Unlock()
-	})
+		startButton.Enable()
+		stopButton.Disable()
+		pollingMutex.Unlock()
+	}
 
-	mainTab := container.NewVBox(
-		widget.NewLabel("YouTube Video API key:"),
-		ApiKeyEntry,
-		widget.NewLabel("YouTube Video ID:"),
+	// Layout
+	form := container.NewVBox(
+		widget.NewLabel("🔑 YouTube API Key"),
+		apiKeyEntry,
+		widget.NewLabel("🎥 YouTube Video ID"),
 		videoIDEntry,
-		container.NewHBox(startButton, stopButton),
+		widget.NewLabel("📡 OBS WebSocket URL"),
+		obsWsEntry,
+		widget.NewLabel("🔐 OBS WebSocket Password"),
+		obsPasswordEntry,
+		startButton,
+		stopButton,
+		layout.NewSpacer(),
 		likeLabel,
+		container.NewPadded(errorText),
 	)
 
 	helpText := `🎥 HOW TO FIND A VIDEO ID:
-- From a YouTube link like: https://www.youtube.com/watch?v=ABC123XYZ
-- Copy only the part after v= (e.g. ABC123XYZ)
+- Copy the part after v= in the YouTube URL: https://youtube.com/watch?v=ABC123 → ABC123
 
 🔑 HOW TO GET A YOUTUBE API KEY:
 1. Visit https://console.cloud.google.com/
 2. Create a project
 3. Go to APIs & Services → Library
-4. Search for "YouTube Data API v3" → Enable it
-5. Go to APIs & Services → Credentials
-6. Create an API Key and copy it
+4. Search for "YouTube Data API v3" and enable it
+5. Go to Credentials → Create API Key
 
-⚠️ Quota Note:
-- YouTube API has daily limits. Don’t poll too frequently.`
+⚠️ Usage Tip:
+- Don’t poll too often. The API has quota limits.`
 
 	helpTab := container.NewScroll(widget.NewLabel(helpText))
 
 	tabs := container.NewAppTabs(
-		container.NewTabItem("Monitor", mainTab),
+		container.NewTabItem("Monitor", form),
 		container.NewTabItem("Help", helpTab),
 	)
 
 	w.SetContent(tabs)
-	w.Resize(fyne.NewSize(500, 300))
+	w.Resize(fyne.NewSize(500, 500))
 	w.ShowAndRun()
 }
