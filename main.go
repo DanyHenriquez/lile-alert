@@ -43,7 +43,7 @@ func getLikeCount(apiKey, videoID string) (uint64, error) {
 	return 0, fmt.Errorf("no video found")
 }
 
-func startPolling(videoID string, label *widget.Label) {
+func startPolling(apiKey, videoID string, label *widget.Label) {
 	go func() {
 		var lastCount uint64 = 0
 		for {
@@ -88,6 +88,12 @@ func main() {
 	likeLabel := widget.NewLabel("Likes: N/A")
 
 	startButton := widget.NewButton("Start", func() {
+		apiKey := strings.TrimSpace(ApiKeyEntry.Text)
+		if apiKey == "" {
+			likeLabel.SetText("Please enter a Video ID")
+			return
+		}
+
 		videoID := strings.TrimSpace(videoIDEntry.Text)
 		if videoID == "" {
 			likeLabel.SetText("Please enter a Video ID")
@@ -96,7 +102,7 @@ func main() {
 		mu.Lock()
 		stopPolling = false
 		mu.Unlock()
-		go startPolling(videoID, likeLabel)
+		go startPolling(apiKey, videoID, likeLabel)
 	})
 
 	stopButton := widget.NewButton("Stop", func() {
